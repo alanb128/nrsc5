@@ -1,7 +1,8 @@
 ### Dependencies
 
 The following packages are required:
-
+ 
+ * libsoapysdr-dev
  * git
  * build-essential
  * cmake
