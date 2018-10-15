@@ -29,7 +29,8 @@
 #include <pthread.h>
 #endif
 
-#include <rtl-sdr.h>
+#include <SoapySDR/Device.h>
+#include <SoapySDR/Formats.h>
 
 #include "defines.h"
 #include "input.h"
@@ -46,7 +47,13 @@ static int snr_callback(void *arg, float snr)
     static int best_gain;
     static float best_snr;
     int result = 0;
-    rtlsdr_dev_t *dev = arg;
+    //rtlsdr_dev_t *dev = arg;
+    SoapySDRKwargs args = {};
+    SoapySDRKwargs_set(&args, "driver", "lime");
+    SoapySDRDevice *dev = SoapySDRDevice_make(&args);
+    SoapySDRKwargs_clear(&args);
+
+
 
     if (gain_count == 0)
         return result;
@@ -73,8 +80,9 @@ static int snr_callback(void *arg, float snr)
         result = 1;
     }
 
-    rtlsdr_set_tuner_gain(dev, gain_list[gain_index]);
-    rtlsdr_reset_buffer(dev);
+    //rtlsdr_set_tuner_gain(dev, gain_list[gain_index]);
+    //rtlsdr_reset_buffer(dev);
+    SoapySDRDevice_setGain(dev, SOAPY_SDR_RX, 0, gain_list[gain_index]);
     return result;
 }
 
@@ -174,15 +182,31 @@ int main(int argc, char *argv[])
         frequency = parse_freq(argv[optind]);
         program = strtoul(argv[optind+1], NULL, 0);
 
-        count = rtlsdr_get_device_count();
+        size_t length;
+
+        //enumerate devices
+        SoapySDRKwargs *results = SoapySDRDevice_enumerate(NULL, &length);
+        for (size_t i = 0; i < length; i++)
+        {
+            //printf("Found device #%d: ", (int)i);
+            for (size_t j = 0; j < results[i].size; j++)
+            {
+                log_info("[%d] %s,", results[i].keys[j], results[i].vals[j]);
+            }
+            count = i;       
+            //printf("\n");
+        }
+        SoapySDRKwargsList_clear(results, length);
+
+    
         if (count == 0)
         {
             log_fatal("No devices found!");
             return 1;
         }
 
-        for (i = 0; i < count; ++i)
-            log_info("[%d] %s", i, rtlsdr_get_device_name(i));
+        //for (i = 0; i < count; ++i)
+        //    log_info("[%d] %s", i, rtlsdr_get_device_name(i));
 
         if (device_index >= count)
         {
@@ -279,56 +303,118 @@ int main(int argc, char *argv[])
     else
     {
         uint8_t *buf = malloc(128 * SNR_FFT_COUNT);
-        rtlsdr_dev_t *dev;
+        //rtlsdr_dev_t *dev;
 
-        err = rtlsdr_open(&dev, 0);
-        if (err) FATAL_EXIT("rtlsdr_open error: %d", err);
-        err = rtlsdr_set_sample_rate(dev, 1488375);
-        if (err) FATAL_EXIT("rtlsdr_set_sample_rate error: %d", err);
-        err = rtlsdr_set_tuner_gain_mode(dev, 1);
-        if (err) FATAL_EXIT("rtlsdr_set_tuner_gain_mode error: %d", err);
-        err = rtlsdr_set_freq_correction(dev, ppm_error);
-        if (err && err != -2) FATAL_EXIT("rtlsdr_set_freq_correction error: %d", err);
-        err = rtlsdr_set_center_freq(dev, frequency);
-        if (err) FATAL_EXIT("rtlsdr_set_center_freq error: %d", err);
+        //err = rtlsdr_reset_buffer(dev);
+        //if (err) FATAL_EXIT("rtlsdr_reset_buffer error: %d", err);
+        void *buffs[] = {buf}; //array of buffers
+        int flags = 0; //flags set by receive operation
+        long long timeNs = 1000000; //timestamp for receive buffer
+
+        //setup a stream (complex floats)
+        SoapySDRStream *rxStream;
+
+        //create device instance
+        //args can be user defined or from the enumeration result
+        SoapySDRKwargs args = {};
+        SoapySDRKwargs_set(&args, "driver", "lime");
+        SoapySDRDevice *sdr = SoapySDRDevice_make(&args);
+        SoapySDRKwargs_clear(&args);
+
+        // use a smaller buffer during auto gain
+        int len = 128 * SNR_FFT_COUNT;
+
+        if (sdr == NULL)
+        {
+            FATAL_EXIT("SoapySDRDevice_make fail: %s", SoapySDRDevice_lastError());
+        }
+
+        if (SoapySDRDevice_setSampleRate(sdr, SOAPY_SDR_RX, 0, 1488375) != 0)
+        {
+            FATAL_EXIT("setSampleRate fail: %s", SoapySDRDevice_lastError());
+        }
+
+
+        //err = rtlsdr_open(&dev, 0);
+        //if (err) FATAL_EXIT("rtlsdr_open error: %d", err);
+        //err = rtlsdr_set_sample_rate(dev, 1488375);
+        //if (err) FATAL_EXIT("rtlsdr_set_sample_rate error: %d", err);
+        // ^^ rtlsdr requires setting manual gain mode before setting gain, ignoring for lime:
+        //err = rtlsdr_set_tuner_gain_mode(dev, 1);
+        //if (err) FATAL_EXIT("rtlsdr_set_tuner_gain_mode error: %d", err);
+        // ^^ lime can set ppm error at freq assign, ignoring for now:
+        //err = rtlsdr_set_freq_correction(dev, ppm_error);
+        //if (err && err != -2) FATAL_EXIT("rtlsdr_set_freq_correction error: %d", err);
+
+        // ^^ may need to look at setFrequencyComponent if this doesn't work
+        if (SoapySDRDevice_setFrequency(sdr, SOAPY_SDR_RX, 0, frequency, NULL) != 0)
+        {
+            FATAL_EXIT("setFrequency fail: %s", SoapySDRDevice_lastError());
+        }
+
+        //err = rtlsdr_set_center_freq(dev, frequency);
+        //if (err) FATAL_EXIT("rtlsdr_set_center_freq error: %d", err);
 
         if (gain == INT_MIN)
         {
-            gain_count = rtlsdr_get_tuner_gains(dev, gain_list);
+            SoapySDRRange gains = SoapySDRDevice_getGainRange(sdr, SOAPY_SDR_RX, 0);
+            //gain_count = rtlsdr_get_tuner_gains(dev, gain_list);
+            gain_count = gains.maximum - gains.minimum;
+            // ^ we will need to fill gain list manually from range struct
+            for (size_t i = 0; i < gain_count; i++)
+            {
+                gain_list[i] = gains.minimum + i;
+            }
             if (gain_count > 0)
             {
-                input_set_snr_callback(&input, snr_callback, dev);
-                err = rtlsdr_set_tuner_gain(dev, gain_list[0]);
-                if (err) FATAL_EXIT("rtlsdr_set_tuner_gain error: %d", err);
+                input_set_snr_callback(&input, snr_callback, sdr);
+                //err = rtlsdr_set_tuner_gain(dev, gain_list[0]);
+                err = SoapySDRDevice_setGain(sdr, SOAPY_SDR_RX, 0, gain_list[0]);
+                if (err != 0) FATAL_EXIT("sdr_set_tuner_gain error: %d", err);
             }
         }
         else
         {
-            err = rtlsdr_set_tuner_gain(dev, gain);
-            if (err) FATAL_EXIT("rtlsdr_set_tuner_gain error: %d", err);
+            //err = rtlsdr_set_tuner_gain(dev, gain);
+            err = SoapySDRDevice_setGain(sdr, SOAPY_SDR_RX, 0, gain);
+            if (err != 0) FATAL_EXIT("sdr_set_tuner_gain error b: %d", err);
         }
 
-        err = rtlsdr_reset_buffer(dev);
-        if (err) FATAL_EXIT("rtlsdr_reset_buffer error: %d", err);
+        
 
         // special loop for modifying gain (we can't use async transfers)
         while (gain_count)
         {
-            // use a smaller buffer during auto gain
-            int len = 128 * SNR_FFT_COUNT;
+            
 
-            err = rtlsdr_read_sync(dev, buf, len, &len);
-            if (err) FATAL_EXIT("rtlsdr_read_sync error: %d", err);
+            
+            //err = rtlsdr_read_sync(dev, buf, len, &len);
+            if (SoapySDRDevice_setupStream(sdr, &rxStream, SOAPY_SDR_RX, SOAPY_SDR_CF32, NULL, 0, NULL) != 0)
+            {
+                FATAL_EXIT("setupStream fail: %s", SoapySDRDevice_lastError());
+            }
+            SoapySDRDevice_activateStream(sdr, rxStream, 0, 0, 0); //start streaming
 
-            input_cb(buf, len, &input);
+            //create a re-usable buffer for rx samples
+            complex float buff[128 * SNR_FFT_COUNT];
+
+            //receive sample
+            int ret = SoapySDRDevice_readStream(sdr, rxStream, buffs, 1024, &flags, &timeNs, 100000);
+            //printf("ret=%d, flags=%d, timeNs=%lld\n", ret, flags, timeNs);
+            //if (err) FATAL_EXIT("rtlsdr_read_sync error: %d", err);
+
+            input_cb(buf, ret * 2, rxStream);
         }
         free(buf);
 
-        err = rtlsdr_read_async(dev, input_cb, &input, RADIO_BUFCNT, RADIO_BUFFER);
-        if (err) FATAL_EXIT("rtlsdr_read_async error: %d", err);
-        err = rtlsdr_close(dev);
-        if (err) FATAL_EXIT("rtlsdr error: %d", err);
+        //err = rtlsdr_read_async(dev, input_cb, &input, RADIO_BUFCNT, RADIO_BUFFER);
+        //if (err) FATAL_EXIT("rtlsdr_read_async error: %d", err);
+        int ret = SoapySDRDevice_readStream(sdr, rxStream, buffs, 1024, &flags, &timeNs, 100000);
+        input_cb(buf, ret * 2, rxStream);
+        //err = rtlsdr_close(dev);
+        //if (err) FATAL_EXIT("rtlsdr error: %d", err);
     }
 
     return 0;
 }
+
