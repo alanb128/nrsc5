@@ -33,6 +33,38 @@ endif()
 find_library (FFTW3F_LIBRARY fftw3f)
 find_library (RTL_SDR_LIBRARY rtlsdr)
 
+message(STATUS "Finding SoapySDR.")
+if(NOT SOAPYSDR_FOUND)
+  #pkg_check_modules (SOAPYSDR_PKG SoapySDR)
+
+  find_path(SOAPYSDR_INCLUDE_DIRS 
+    NAMES Device.h
+    PATHS ${SOAPYSDR_PKG_INCLUDE_DIRS}
+          /usr/include/SoapySDR
+          /usr/local/include/SoapySDR
+  )
+
+  find_library(SOAPYSDR_LIBRARIES 
+    NAMES SoapySDR
+    PATHS ${LIMESDR_PKG_LIBRARY_DIRS}
+          /usr/lib/x86_64-linux-gnu/SoapySDR/modules0.6
+          /usr/local/lib/x86_64-linux-gnu/SoapySDR/modules0.6
+          /usr/local/lib/SoapySDR/modules0.6     
+  )
+
+
+if(SOAPYSDR_INCLUDE_DIRS AND SOAPYSDR_LIBRARIES)
+  set(SOAPYSDR_FOUND TRUE CACHE INTERNAL "libSOAPYSDR found")
+  message(STATUS "Found libSOAPYSDR: ${SOAPYSDR_INCLUDE_DIRS}, ${SOAPYSDR_LIBRARIES}")
+else(SOAPYSDR_INCLUDE_DIRS AND SOAPYSDR_LIBRARIES)
+  set(SOAPYSDR_FOUND FALSE CACHE INTERNAL "libSOAPYSDR found")
+  message(STATUS "libSOAPYSDR not found.")
+endif(SOAPYSDR_INCLUDE_DIRS AND SOAPYSDR_LIBRARIES)
+
+mark_as_advanced(SOAPYSDR_LIBRARIES SOAPYSDR_INCLUDE_DIRS)
+
+endif(NOT SOAPYSDR_FOUND)
+
 if (CMAKE_SYSTEM_PROCESSOR MATCHES "arm.*")
     if (USE_NEON)
         set (CMAKE_C_FLAGS "-mcpu=cortex-a7 -mfloat-abi=hard -mfpu=neon-vfpv4")
